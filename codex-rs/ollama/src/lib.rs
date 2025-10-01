@@ -4,14 +4,12 @@ mod pull;
 mod url;
 
 pub use client::OllamaClient;
+pub use codex_core::DEFAULT_OSS_MODEL;
 use codex_core::config::Config;
 pub use pull::CliProgressReporter;
 pub use pull::PullEvent;
 pub use pull::PullProgressReporter;
 pub use pull::TuiProgressReporter;
-
-/// Default OSS model to use when `--oss` is passed without an explicit `-m`.
-pub const DEFAULT_OSS_MODEL: &str = "gpt-oss:20b";
 
 /// Prepare the local OSS environment when `--oss` is selected.
 ///
@@ -29,9 +27,11 @@ pub async fn ensure_oss_ready(config: &Config) -> std::io::Result<()> {
         Ok(models) => {
             if !models.iter().any(|m| m == model) {
                 let mut reporter = crate::CliProgressReporter::new();
-                ollama_client
-                    .pull_with_reporter(model, &mut reporter)
-                    .await?;
+                if let Err(err) = ollama_client.pull_with_reporter(model, &mut reporter).await {
+                    tracing::warn!(
+                        "Skipping automatic pull for {model}: {err}. You can pull it manually with `ollama pull {model}` if needed."
+                    );
+                }
             }
         }
         Err(err) => {

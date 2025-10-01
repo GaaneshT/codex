@@ -17,6 +17,22 @@ You can also install via Homebrew (`brew install codex`) or download a platform-
 
 The Rust implementation is now the maintained Codex CLI and serves as the default experience. It includes a number of features that the legacy TypeScript CLI never supported.
 
+### Local models powered by Ollama
+
+Codex now defaults to the open-source `gpt-oss:20b` model served locally via [Ollama](https://ollama.com/).
+Start the Ollama daemon with `ollama serve` before launching Codex so the CLI can connect and download the
+model the first time it is needed. Providers and models follow the precedence `CLI flags > environment vars > config.toml > built-in defaults`:
+
+- `codex --provider oss` (or `codex --oss`) selects the local provider and defaults to `gpt-oss:20b`.
+- `codex --provider openai` restores the hosted path; pass `-m <model>` as usual.
+- Environment variables:
+  - `CODEX_PROVIDER` (`oss`, `ollama`, or `openai`)
+  - `CODEX_MODEL` to pick a specific model id
+  - `OLLAMA_HOST` (defaults to `http://localhost:11434`) when running Ollama on a non-standard host/port
+
+If you prefer to set this permanently, add `model_provider = "openai"` and `model = "gpt-5-codex"` (or your
+preferred model) to `~/.codex/config.toml` or use `codex -c` overrides.
+
 ### Config
 
 Codex supports a rich set of configuration options. Note that the Rust CLI uses `config.toml` instead of `config.json`. See [`docs/config.md`](../docs/config.md) for details.

@@ -18,6 +18,10 @@ pub struct Cli {
     #[arg(long, short = 'm')]
     pub model: Option<String>,
 
+    /// Select the model provider to use (e.g. `oss` or `openai`).
+    #[arg(long = "provider")]
+    pub provider: Option<String>,
+
     #[arg(long = "oss", default_value_t = false)]
     pub oss: bool,
 

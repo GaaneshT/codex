@@ -15,9 +15,15 @@ pub mod test_codex_exec;
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.codex`.
 pub fn load_default_config_for_test(codex_home: &TempDir) -> Config {
+    let overrides = ConfigOverrides {
+        model: Some("gpt-5-codex".to_string()),
+        model_provider: Some("openai".to_string()),
+        ..ConfigOverrides::default()
+    };
+
     Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
-        ConfigOverrides::default(),
+        overrides,
         codex_home.path().to_path_buf(),
     )
     .expect("defaults for test should always succeed")

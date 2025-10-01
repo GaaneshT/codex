@@ -17,9 +17,15 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn test_config(temp_home: &TempDir) -> Config {
+    let overrides = ConfigOverrides {
+        model: Some("gpt-5-codex".to_string()),
+        model_provider: Some("openai".to_string()),
+        ..ConfigOverrides::default()
+    };
+
     Config::load_from_base_config_with_overrides(
         ConfigToml::default(),
-        ConfigOverrides::default(),
+        overrides,
         temp_home.path().to_path_buf(),
     )
     .expect("load config")

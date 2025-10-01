@@ -1,3 +1,8 @@
+use crate::BUILT_IN_OSS_MODEL_PROVIDER_ID;
+use crate::DEFAULT_OSS_MODEL;
+use crate::auth::CodexAuth;
+use crate::auth::OPENAI_API_KEY_ENV_VAR;
+use crate::auth::get_auth_file;
 use crate::config_profile::ConfigProfile;
 use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::config_types::History;
@@ -27,6 +32,7 @@ use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::Verbosity;
+use codex_protocol::mcp_protocol::AuthMode;
 use codex_protocol::mcp_protocol::Tools;
 use codex_protocol::mcp_protocol::UserSavedConfig;
 use dirs::home_dir;
@@ -45,6 +51,9 @@ use toml_edit::Table as TomlTable;
 const OPENAI_DEFAULT_MODEL: &str = "gpt-5-codex";
 const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5-codex";
 pub const GPT_5_CODEX_MEDIUM_MODEL: &str = "gpt-5-codex";
+
+const CODEX_PROVIDER_ENV: &str = "CODEX_PROVIDER";
+const CODEX_MODEL_ENV: &str = "CODEX_MODEL";
 
 /// Maximum number of bytes of the documentation that will be embedded. Larger
 /// files are *silently truncated* to this size so we do not take up too much of
@@ -925,10 +934,19 @@ impl Config {
             model_providers.entry(key).or_insert(provider);
         }
 
+        let env_provider_override = std::env::var(CODEX_PROVIDER_ENV)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| canonicalize_provider_id(&value));
+
+        let default_provider_id = select_default_provider(&codex_home)?;
+
         let model_provider_id = model_provider
+            .or(env_provider_override)
             .or(config_profile.model_provider)
             .or(cfg.model_provider)
-            .unwrap_or_else(|| "openai".to_string());
+            .unwrap_or_else(|| default_provider_id.clone());
         let model_provider = model_providers
             .get(&model_provider_id)
             .ok_or_else(|| {
@@ -970,10 +988,20 @@ impl Config {
             .or(cfg.tools.as_ref().and_then(|t| t.view_image))
             .unwrap_or(true);
 
-        let model = model
+        let default_model = default_model_for_provider(&model_provider_id).to_string();
+        let env_model_override = std::env::var(CODEX_MODEL_ENV)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let mut model = model
+            .or(env_model_override)
             .or(config_profile.model)
             .or(cfg.model)
-            .unwrap_or_else(default_model);
+            .unwrap_or_else(|| default_model.clone());
+
+        if model_provider_id == BUILT_IN_OSS_MODEL_PROVIDER_ID {
+            model = canonicalize_oss_model_id(&model);
+        }
 
         let mut model_family =
             find_family_for_model(&model).unwrap_or_else(|| derive_default_model_family(&model));
@@ -1012,9 +1040,11 @@ impl Config {
         let base_instructions = base_instructions.or(file_base_instructions);
 
         // Default review model when not set in config; allow CLI override to take precedence.
+        let default_review_model =
+            default_review_model_for_provider(&model_provider_id).to_string();
         let review_model = override_review_model
             .or(cfg.review_model)
-            .unwrap_or_else(default_review_model);
+            .unwrap_or_else(|| default_review_model.clone());
 
         let config = Self {
             model,
@@ -1155,12 +1185,64 @@ impl Config {
     }
 }
 
-fn default_model() -> String {
-    OPENAI_DEFAULT_MODEL.to_string()
+fn default_model_for_provider(provider_id: &str) -> &'static str {
+    if provider_id == BUILT_IN_OSS_MODEL_PROVIDER_ID {
+        DEFAULT_OSS_MODEL
+    } else {
+        OPENAI_DEFAULT_MODEL
+    }
 }
 
-fn default_review_model() -> String {
-    OPENAI_DEFAULT_REVIEW_MODEL.to_string()
+fn default_review_model_for_provider(provider_id: &str) -> &'static str {
+    if provider_id == BUILT_IN_OSS_MODEL_PROVIDER_ID {
+        DEFAULT_OSS_MODEL
+    } else {
+        OPENAI_DEFAULT_REVIEW_MODEL
+    }
+}
+
+fn canonicalize_provider_id(raw: &str) -> String {
+    match raw.trim() {
+        "" => String::new(),
+        value => match value.to_ascii_lowercase().as_str() {
+            "ollama" | "oss" => BUILT_IN_OSS_MODEL_PROVIDER_ID.to_string(),
+            _ => value.to_string(),
+        },
+    }
+}
+
+fn select_default_provider(codex_home: &Path) -> std::io::Result<String> {
+    if has_openai_credentials(codex_home)? {
+        Ok("openai".to_string())
+    } else {
+        Ok(BUILT_IN_OSS_MODEL_PROVIDER_ID.to_string())
+    }
+}
+
+fn canonicalize_oss_model_id(model: &str) -> String {
+    model
+        .strip_suffix(":latest")
+        .map(str::to_string)
+        .unwrap_or_else(|| model.to_string())
+}
+
+fn has_openai_credentials(codex_home: &Path) -> std::io::Result<bool> {
+    if std::env::var(OPENAI_API_KEY_ENV_VAR)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return Ok(true);
+    }
+
+    let auth_file = get_auth_file(codex_home);
+    if !auth_file.exists() {
+        return Ok(false);
+    }
+
+    match CodexAuth::from_codex_home(codex_home)? {
+        Some(auth) => Ok(matches!(auth.mode, AuthMode::ApiKey | AuthMode::ChatGPT)),
+        None => Ok(false),
+    }
 }
 
 /// Returns the path to the Codex configuration directory, which can be

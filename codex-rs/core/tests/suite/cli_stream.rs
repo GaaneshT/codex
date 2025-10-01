@@ -199,6 +199,10 @@ async fn responses_api_stream_cli() {
         .arg("--")
         .arg("exec")
         .arg("--skip-git-repo-check")
+        .arg("-c")
+        .arg("model_provider=openai")
+        .arg("-c")
+        .arg("model=gpt-5-codex")
         .arg("-C")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg("hello?");
@@ -240,6 +244,10 @@ async fn integration_creates_and_checks_session_file() {
         .arg("--")
         .arg("exec")
         .arg("--skip-git-repo-check")
+        .arg("-c")
+        .arg("model_provider=openai")
+        .arg("-c")
+        .arg("model=gpt-5-codex")
         .arg("-C")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg(&prompt);

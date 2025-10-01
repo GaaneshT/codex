@@ -8,6 +8,7 @@ pub use app::AppExitInfo;
 use codex_core::AuthManager;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use codex_core::CodexAuth;
+use codex_core::DEFAULT_OSS_MODEL;
 use codex_core::RolloutRecorder;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -17,7 +18,6 @@ use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::find_conversation_path_by_id_str;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
-use codex_ollama::DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::mcp_protocol::AuthMode;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
@@ -106,22 +106,27 @@ pub async fn run_main(
         )
     };
 
-    // When using `--oss`, let the bootstrapper pick the model (defaulting to
-    // gpt-oss:20b) and ensure it is present locally. Also, force the built‑in
-    // `oss` model provider.
+    let provider_override = cli
+        .provider
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(normalize_provider_id)
+        .or_else(|| cli.oss.then_some(BUILT_IN_OSS_MODEL_PROVIDER_ID.to_owned()));
+
+    let use_oss_defaults = provider_override
+        .as_deref()
+        .map_or(cli.oss, |id| id == BUILT_IN_OSS_MODEL_PROVIDER_ID);
+
     let model = if let Some(model) = &cli.model {
         Some(model.clone())
-    } else if cli.oss {
+    } else if use_oss_defaults {
         Some(DEFAULT_OSS_MODEL.to_owned())
     } else {
         None // No model specified, will use the default.
     };
 
-    let model_provider_override = if cli.oss {
-        Some(BUILT_IN_OSS_MODEL_PROVIDER_ID.to_owned())
-    } else {
-        None
-    };
+    let model_provider_override = provider_override.clone();
 
     // canonicalize the cwd
     let cwd = cli.cwd.clone().map(|p| p.canonicalize().unwrap_or(p));
@@ -139,7 +144,7 @@ pub async fn run_main(
         include_plan_tool: Some(true),
         include_apply_patch_tool: None,
         include_view_image_tool: None,
-        show_raw_agent_reasoning: cli.oss.then_some(true),
+        show_raw_agent_reasoning: use_oss_defaults.then_some(true),
         tools_web_search_request: cli.web_search.then_some(true),
     };
     let raw_overrides = cli.config_overrides.raw_overrides.clone();
@@ -234,8 +239,8 @@ pub async fn run_main(
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
         .with_filter(env_filter());
 
-    if cli.oss {
-        codex_ollama::ensure_oss_ready(&config)
+    if config.model_provider_id == BUILT_IN_OSS_MODEL_PROVIDER_ID {
+        ensure_ollama_ready(&config)
             .await
             .map_err(|e| std::io::Error::other(format!("OSS setup failed: {e}")))?;
     }
@@ -525,4 +530,24 @@ fn should_show_login_screen(login_status: LoginStatus, config: &Config) -> bool 
     }
 
     login_status == LoginStatus::NotAuthenticated
+}
+
+fn normalize_provider_id(raw: &str) -> String {
+    match raw.trim() {
+        "" => String::new(),
+        value => match value.to_ascii_lowercase().as_str() {
+            "ollama" | "oss" => BUILT_IN_OSS_MODEL_PROVIDER_ID.to_string(),
+            _ => value.to_string(),
+        },
+    }
+}
+
+#[cfg(feature = "ollama")]
+async fn ensure_ollama_ready(config: &Config) -> std::io::Result<()> {
+    codex_ollama::ensure_oss_ready(config).await
+}
+
+#[cfg(not(feature = "ollama"))]
+async fn ensure_ollama_ready(_config: &Config) -> std::io::Result<()> {
+    Ok(())
 }

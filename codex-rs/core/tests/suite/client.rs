@@ -1,6 +1,8 @@
+use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use codex_core::CodexAuth;
 use codex_core::ContentItem;
 use codex_core::ConversationManager;
+use codex_core::DEFAULT_OSS_MODEL;
 use codex_core::LocalShellAction;
 use codex_core::LocalShellExecAction;
 use codex_core::LocalShellStatus;
@@ -13,6 +15,8 @@ use codex_core::ResponseEvent;
 use codex_core::ResponseItem;
 use codex_core::WireApi;
 use codex_core::built_in_model_providers;
+use codex_core::create_oss_provider_with_base_url;
+use codex_core::model_family::derive_default_model_family;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::InputItem;
 use codex_core::protocol::Op;
@@ -913,6 +917,80 @@ async fn token_count_includes_rate_limits_snapshot() {
     );
 
     wait_for_event(&codex, |msg| matches!(msg, EventMsg::TaskComplete(_))).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_completions_streams_for_oss_provider() {
+    skip_if_no_network!();
+    let server = MockServer::start().await;
+
+    let sse_body = concat!(
+        "data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\"},\"index\":0,\"finish_reason\":null}]}",
+        "\n\n",
+        "data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\" world\"},\"index\":0,\"finish_reason\":null}]}",
+        "\n\n",
+        "data: {\"id\":\"chatcmpl-123\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{},\"index\":0,\"finish_reason\":\"stop\"}]}",
+        "\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    let response = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_raw(sse_body, "text/event-stream");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(response)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let home = TempDir::new().unwrap();
+    let mut config = load_default_config_for_test(&home);
+    config.model_provider = create_oss_provider_with_base_url(&format!("{}/v1", server.uri()));
+    config.model_provider_id = BUILT_IN_OSS_MODEL_PROVIDER_ID.to_string();
+    config.model = DEFAULT_OSS_MODEL.to_string();
+    config.model_family = derive_default_model_family(&config.model);
+
+    let conversation_manager = ConversationManager::with_auth(CodexAuth::from_api_key("dummy"));
+    let codex = conversation_manager
+        .new_conversation(config)
+        .await
+        .expect("create conversation")
+        .conversation;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![InputItem::Text {
+                text: "say hello".into(),
+            }],
+        })
+        .await
+        .expect("submit user input");
+
+    let agent_message = wait_for_event(&codex, |ev| matches!(ev, EventMsg::AgentMessage(_))).await;
+    if let EventMsg::AgentMessage(message) = agent_message {
+        assert_eq!(message.message, "Hello world");
+    } else {
+        panic!("expected agent message event");
+    }
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
+
+    let requests = server.received_requests().await.expect("collect requests");
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request body json");
+    assert_eq!(body["model"].as_str(), Some(DEFAULT_OSS_MODEL));
+    assert_eq!(body["stream"].as_bool(), Some(true));
+    let messages = body["messages"].as_array().expect("messages array");
+    assert_eq!(
+        messages
+            .first()
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str()),
+        Some("system")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

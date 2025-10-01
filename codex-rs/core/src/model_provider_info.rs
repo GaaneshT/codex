@@ -248,6 +248,10 @@ impl ModelProviderInfo {
 }
 
 const DEFAULT_OLLAMA_PORT: u32 = 11434;
+const OLLAMA_HOST_ENV_VAR: &str = "OLLAMA_HOST";
+
+/// Default model served by the built-in OSS provider.
+pub const DEFAULT_OSS_MODEL: &str = "gpt-oss:20b";
 
 pub const BUILT_IN_OSS_MODEL_PROVIDER_ID: &str = "oss";
 
@@ -307,24 +311,8 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
 }
 
 pub fn create_oss_provider() -> ModelProviderInfo {
-    // These CODEX_OSS_ environment variables are experimental: we may
-    // switch to reading values from config.toml instead.
-    let codex_oss_base_url = match std::env::var("CODEX_OSS_BASE_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-    {
-        Some(url) => url,
-        None => format!(
-            "http://localhost:{port}/v1",
-            port = std::env::var("CODEX_OSS_PORT")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-                .and_then(|v| v.parse::<u32>().ok())
-                .unwrap_or(DEFAULT_OLLAMA_PORT)
-        ),
-    };
-
-    create_oss_provider_with_base_url(&codex_oss_base_url)
+    let base_url = resolve_ollama_base_url();
+    create_oss_provider_with_base_url(&base_url)
 }
 
 pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
@@ -342,6 +330,49 @@ pub fn create_oss_provider_with_base_url(base_url: &str) -> ModelProviderInfo {
         stream_idle_timeout_ms: None,
         requires_openai_auth: false,
     }
+}
+
+fn resolve_ollama_base_url() -> String {
+    if let Some(url) = std::env::var("CODEX_OSS_BASE_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        return url;
+    }
+
+    if let Some(host) = std::env::var(OLLAMA_HOST_ENV_VAR)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        return normalize_ollama_host(&host);
+    }
+
+    let port = std::env::var("CODEX_OSS_PORT")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_OLLAMA_PORT);
+
+    normalize_ollama_host(&format!("localhost:{port}"))
+}
+
+fn normalize_ollama_host(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        return String::new();
+    }
+
+    let mut base = if raw.contains("://") {
+        raw.trim().to_string()
+    } else {
+        format!("http://{}", raw.trim())
+    };
+
+    base.truncate(base.trim_end_matches('/').len());
+    if !base.ends_with("/v1") {
+        base.push_str("/v1");
+    }
+
+    base
 }
 
 fn matches_azure_responses_base_url(base_url: &str) -> bool {

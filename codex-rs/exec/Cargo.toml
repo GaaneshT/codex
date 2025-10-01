@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "codex_exec"
 path = "src/lib.rs"
 
+[features]
+default = ["ollama"]
+ollama = ["dep:codex-ollama"]
+
 [lints]
 workspace = true
 
@@ -25,7 +29,7 @@ codex-common = { workspace = true, features = [
     "sandbox_summary",
 ] }
 codex-core = { workspace = true }
-codex-ollama = { workspace = true }
+codex-ollama = { workspace = true, optional = true }
 codex-protocol = { workspace = true }
 owo-colors = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

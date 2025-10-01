@@ -9,6 +9,7 @@ pub use cli::Cli;
 use codex_core::AuthManager;
 use codex_core::BUILT_IN_OSS_MODEL_PROVIDER_ID;
 use codex_core::ConversationManager;
+use codex_core::DEFAULT_OSS_MODEL;
 use codex_core::NewConversation;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -19,7 +20,6 @@ use codex_core::protocol::EventMsg;
 use codex_core::protocol::InputItem;
 use codex_core::protocol::Op;
 use codex_core::protocol::TaskCompleteEvent;
-use codex_ollama::DEFAULT_OSS_MODEL;
 use codex_protocol::config_types::SandboxMode;
 use event_processor_with_human_output::EventProcessorWithHumanOutput;
 use event_processor_with_json_output::EventProcessorWithJsonOutput;
@@ -45,6 +45,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         command,
         images,
         model: model_cli_arg,
+        provider: provider_cli_arg,
         oss,
         config_profile,
         full_auto,
@@ -136,22 +137,29 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         sandbox_mode_cli_arg.map(Into::<SandboxMode>::into)
     };
 
-    // When using `--oss`, let the bootstrapper pick the model (defaulting to
-    // gpt-oss:20b) and ensure it is present locally. Also, force the built‑in
-    // `oss` model provider.
+    let provider_override = provider_cli_arg
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(normalize_provider_id)
+        .or_else(|| oss.then_some(BUILT_IN_OSS_MODEL_PROVIDER_ID.to_string()));
+
+    // When the CLI explicitly targets the OSS provider (either via --provider
+    // or --oss) and no model was supplied, fall back to the default local
+    // model. Otherwise defer to the config/env defaults.
+    let use_oss_defaults = provider_override
+        .as_deref()
+        .map_or(oss, |id| id == BUILT_IN_OSS_MODEL_PROVIDER_ID);
+
     let model = if let Some(model) = model_cli_arg {
         Some(model)
-    } else if oss {
+    } else if use_oss_defaults {
         Some(DEFAULT_OSS_MODEL.to_owned())
     } else {
         None // No model specified, will use the default.
     };
 
-    let model_provider = if oss {
-        Some(BUILT_IN_OSS_MODEL_PROVIDER_ID.to_string())
-    } else {
-        None // No specific model provider override.
-    };
+    let model_provider = provider_override;
 
     // Load configuration and determine approval policy
     let overrides = ConfigOverrides {
@@ -169,7 +177,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         include_plan_tool: Some(include_plan_tool),
         include_apply_patch_tool: None,
         include_view_image_tool: None,
-        show_raw_agent_reasoning: oss.then_some(true),
+        show_raw_agent_reasoning: use_oss_defaults.then_some(true),
         tools_web_search_request: None,
     };
     // Parse `-c` overrides.
@@ -182,6 +190,12 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     };
 
     let config = Config::load_with_cli_overrides(cli_kv_overrides, overrides)?;
+
+    if config.model_provider_id == BUILT_IN_OSS_MODEL_PROVIDER_ID {
+        ensure_ollama_ready(&config)
+            .await
+            .map_err(|e| anyhow::anyhow!("OSS setup failed: {e}"))?;
+    }
 
     let otel = codex_core::otel_init::build_provider(&config, env!("CARGO_PKG_VERSION"));
 
@@ -224,12 +238,6 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
             last_message_file.clone(),
         )),
     };
-
-    if oss {
-        codex_ollama::ensure_oss_ready(&config)
-            .await
-            .map_err(|e| anyhow::anyhow!("OSS setup failed: {e}"))?;
-    }
 
     let default_cwd = config.cwd.to_path_buf();
     let default_approval_policy = config.approval_policy;
@@ -425,4 +433,24 @@ fn load_output_schema(path: Option<PathBuf>) -> Option<Value> {
             std::process::exit(1);
         }
     }
+}
+
+fn normalize_provider_id(raw: &str) -> String {
+    match raw.trim() {
+        "" => String::new(),
+        value => match value.to_ascii_lowercase().as_str() {
+            "ollama" | "oss" => BUILT_IN_OSS_MODEL_PROVIDER_ID.to_string(),
+            _ => value.to_string(),
+        },
+    }
+}
+
+#[cfg(feature = "ollama")]
+async fn ensure_ollama_ready(config: &Config) -> std::io::Result<()> {
+    codex_ollama::ensure_oss_ready(config).await
+}
+
+#[cfg(not(feature = "ollama"))]
+async fn ensure_ollama_ready(_config: &Config) -> std::io::Result<()> {
+    Ok(())
 }

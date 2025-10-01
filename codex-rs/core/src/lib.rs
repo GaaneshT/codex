@@ -39,6 +39,7 @@ mod truncate;
 mod unified_exec;
 mod user_instructions;
 pub use model_provider_info::BUILT_IN_OSS_MODEL_PROVIDER_ID;
+pub use model_provider_info::DEFAULT_OSS_MODEL;
 pub use model_provider_info::ModelProviderInfo;
 pub use model_provider_info::WireApi;
 pub use model_provider_info::built_in_model_providers;
